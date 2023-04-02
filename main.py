@@ -1,4 +1,5 @@
 import requests
+from typing import Literal
 
 query_list = """
 query ($username: String, $type: MediaType) {
@@ -39,7 +40,7 @@ query ($ids: [Int]) {
 
 query_final = """
 query ($ids: [Int]) {
-   Page(page: 1, perPage: 10) {
+  Page(page: 1, perPage: 10) {
     media(id_in: $ids) {
       id,
       title {
@@ -53,8 +54,8 @@ query ($ids: [Int]) {
 }
 """
 
-def get_recommendations(user: str):
-    req_data = requests.post("https://graphql.anilist.co/", json={"query": query_list, "variables": {"username": user, "type": "ANIME"}})
+def get_recommendations(user: str, include_planned: bool, media_type: Literal["ANIME", "MANGA"]):
+    req_data = requests.post("https://graphql.anilist.co/", json={"query": query_list, "variables": {"username": user, "type": media_type}})
 
     if not req_data:
         print("AAAAAAAAAAAAAAAAA")
@@ -80,9 +81,12 @@ def get_recommendations(user: str):
                 series[sid] *= 0.5
             if entry["repeat"] != 0:
                 series[sid] *= 1 + 0.25 * entry["repeat"]
-            if entry["status"] != "PLANNING":
+            
+            if include_planned:
+                if entry["status"] != "PLANNING":
+                    to_skip.add(sid)
+            else:
                 to_skip.add(sid)
-            # to_skip.add(sid)
 
 
     series_ids = list(series.keys())
@@ -137,8 +141,13 @@ def get_recommendations(user: str):
 def main():
     while True:
         username = input("User to check: ")
+        planned = input("Include series from plan to watch list? (y/n) ")
+        media_type = input("Recommendation type (ANIME/MANGA): ")
+        if media_type.upper() not in {"ANIME", "MANGA"}:
+            print("Invalid media type provided")
+            continue
         if username:
-            get_recommendations(username)
+            get_recommendations(username, planned.lower() == "y", media_type.upper())
             
 if __name__ == "__main__":
     main()
