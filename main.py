@@ -1,67 +1,76 @@
 import requests
-from typing import Literal
+from typing import Literal, Any
 
 query_list = """
 query ($username: String, $type: MediaType) {
-  MediaListCollection(userName: $username, type: $type) {
-    lists {
-      entries {
-        status
-        score(format: POINT_100)
-        progress
-        repeat
-        media {
-          id
-          title { romaji }
+    MediaListCollection(userName: $username, type: $type) {
+        lists {
+            entries {
+                status
+                score(format: POINT_100)
+                progress
+                repeat
+                media {
+                    id
+                    title { 
+                        romaji
+                    }
+                }
+            }
         }
-      }
     }
-  }
 }
-"""
+""".replace("    ", "")
 
 query_recom = """
 query ($ids: [Int]) {
-  Page(page: 1, perPage: 50) {
-    media(id_in: $ids) {
-      id
-      recommendations(page: 1, perPage: 25, sort: RATING_DESC) {
-        nodes{
-          rating
-          mediaRecommendation{
+    Page(page: 1, perPage: 50) {
+        media(id_in: $ids) {
             id
-          }
+            recommendations(page: 1, perPage: 25, sort: RATING_DESC) {
+                nodes{
+                    rating
+                    mediaRecommendation{
+                        id
+                    }
+                }
+            }
         }
-      }
     }
-  }
 }
-"""
+""".replace("    ", "")
 
 query_final = """
 query ($ids: [Int]) {
-  Page(page: 1, perPage: 10) {
-    media(id_in: $ids) {
-      id,
-      title {
-        romaji
-      },
-      coverImage {
-        extraLarge
-      }
+    Page(page: 1, perPage: 10) {
+        media(id_in: $ids) {
+            id,
+            title {
+                romaji
+            },
+            coverImage {
+                extraLarge
+            }
+        }
     }
-  }
 }
-"""
+""".replace("    ", "")
 
-def get_recommendations(user: str, include_planned: bool, media_type: Literal["ANIME", "MANGA"]):
+def get_user_media_list(user: str, media_type: Literal["ANIME", "MANGA"]) -> list[dict[str, Any]] | None:
     req_data = requests.post("https://graphql.anilist.co/", json={"query": query_list, "variables": {"username": user, "type": media_type}})
 
     if not req_data:
-        print("AAAAAAAAAAAAAAAAA")
-        exit()
+        return None
 
-    data = req_data.json()["data"]["MediaListCollection"]["lists"]
+    return req_data.json()["data"]["MediaListCollection"]["lists"]
+
+
+def get_recommendations(user: str, include_planned: bool, media_type: Literal["ANIME", "MANGA"]) -> list[str] | None:
+    
+    data = get_user_media_list(user, media_type)
+    if data is None:
+        print("Cannot fetch provided users profile")
+        return
 
     series = {}
     to_skip = set()
@@ -95,12 +104,25 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
     recommendations = {}
     while i < len(series_ids):
         id_pack = series_ids[i:i+50]
-        req_recom = requests.post("https://graphql.anilist.co/", json={"query": query_recom, "variables": {"ids": id_pack}})
+
+        try:
+            req_recom = requests.post("https://graphql.anilist.co/", json={"query": query_recom, "variables": {"ids": id_pack}})
+        except:
+            req_recom = None
+            tries_left = 5
+            while tries_left:
+                print(f"Cannot fetch page of media data. {tries_left} tries left.")
+                try:
+                    req_recom = requests.post("https://graphql.anilist.co/", json={"query": query_recom, "variables": {"ids": id_pack}})
+                except:
+                    pass
+                if req_recom:
+                    break
+                tries_left -= 1
+            print("Cannot fetch page of media data. Limit reached.")
+            return
         
-        if not req_recom:
-            print("AAAAAAAAAAAAAAAAAAAAA")
-            exit()
-        
+
         media = req_recom.json()["data"]["Page"]["media"]
         for recoms in media:
             rating_sum = sum([recom["rating"] for recom in recoms["recommendations"]["nodes"]])
@@ -124,19 +146,29 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
             recommended.append(rec)
     recommended.sort(key=lambda x: recommendations[x], reverse=True)
 
-    req_final = requests.post("https://graphql.anilist.co/", json={"query": query_final, "variables": {"ids": recommended[:10]}})
-
-    if not req_final:
-        print("AAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-        exit()
+    try:
+        req_final = requests.post("https://graphql.anilist.co/", json={"query": query_final, "variables": {"ids": recommended[:10]}})
+    except:
+        req_final = None
+        tries_left = 5
+        while tries_left:
+            print(f"Cannot fetch recommended series data. {tries_left} tries left.")
+            try:
+                req_final = requests.post("https://graphql.anilist.co/", json={"query": query_recom, "variables": {"ids": id_pack}})
+            except:
+                pass
+            if req_final:
+                break
+            tries_left -= 1
+        print("Cannot fetch page of media data. Limit reached.")
+        return
         
     final_data = req_final.json()["data"]["Page"]["media"]
     final_recoms = {}
     for recom in final_data:
         final_recoms[recom["id"]] = recom["title"]["romaji"]
 
-    for i, ser_id in enumerate(recommended[:10], start=1):
-        print(f"{i}. {final_recoms[ser_id]}")
+    return [final_recoms[ser_id] for ser_id in recommended[:10]]
         
 def main():
     while True:
@@ -147,7 +179,12 @@ def main():
             print("Invalid media type provided")
             continue
         if username:
-            get_recommendations(username, planned.lower() == "y", media_type.upper())
+            recommendations = get_recommendations(username, planned.lower() == "y", media_type.upper())
+            if recommendations is not None:
+                print(f"\nRecommendations for {username}:")
+                for i, recom in enumerate(recommendations, start=1):
+                    print(f"{i:>2}. {recom}")
+                print()
             
 if __name__ == "__main__":
     main()
