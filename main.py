@@ -20,7 +20,7 @@ query ($username: String, $type: MediaType) {
         }
     }
 }
-""".replace("    ", "")
+""".replace("    ", "") # reducing payload size
 
 query_recom = """
 query ($ids: [Int]) {
@@ -72,24 +72,24 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
         print("Cannot fetch provided users profile")
         return
 
-    series = {}
+    user_series_rating_weighted = {}
     to_skip = set()
 
     for list_data in data:
         for entry in list_data["entries"]:
             sid = entry["media"]["id"]
             if entry["score"] == 0:
-                series[sid] = 0.5
+                user_series_rating_weighted[sid] = 0.5
             else:
-                series[sid] = entry["score"]/100
+                user_series_rating_weighted[sid] = entry["score"]/100
             if entry["status"] == "CURRENT":
-                series[sid] *= 0.75
+                user_series_rating_weighted[sid] *= 0.75
             elif entry["status"] == "DROPPED":
-                series[sid] *= 0.25
+                user_series_rating_weighted[sid] *= 0.25
             elif entry["status"] == "PAUSED":
-                series[sid] *= 0.5
+                user_series_rating_weighted[sid] *= 0.5
             if entry["repeat"] != 0:
-                series[sid] *= 1 + 0.25 * entry["repeat"]
+                user_series_rating_weighted[sid] *= 1 + 0.25 * entry["repeat"]
             
             if include_planned:
                 if entry["status"] != "PLANNING":
@@ -97,8 +97,9 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
             else:
                 to_skip.add(sid)
 
-
-    series_ids = list(series.keys())
+    for k in user_series_rating_weighted.keys():
+        user_series_rating_weighted[k] -= 0.5
+    series_ids = list(user_series_rating_weighted.keys())
 
     i = 0
     recommendations = {}
@@ -126,7 +127,6 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
         media = req_recom.json()["data"]["Page"]["media"]
         for recoms in media:
             rating_sum = sum([recom["rating"] for recom in recoms["recommendations"]["nodes"]])
-            # print(rating_sum)
             for recom in recoms["recommendations"]["nodes"]:
                 if not recom:
                     continue
@@ -136,7 +136,7 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
                 if media_id not in recommendations:
                     recommendations[media_id] = 0
                 if rating_sum:
-                    recommendations[media_id] += (recom["rating"] / rating_sum) * series[recoms["id"]]
+                    recommendations[media_id] += (recom["rating"] / rating_sum) * user_series_rating_weighted[recoms["id"]]
         
         i += 50
 
