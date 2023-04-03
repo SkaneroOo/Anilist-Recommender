@@ -15,6 +15,7 @@ query ($username: String, $type: MediaType) {
                     title { 
                         romaji
                     }
+                    genres
                 }
             }
         }
@@ -32,6 +33,7 @@ query ($ids: [Int]) {
                     rating
                     mediaRecommendation{
                         id
+                        genres
                     }
                 }
             }
@@ -73,14 +75,22 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
         return
 
     user_series_rating_weighted = {}
+    genres_ratings = {}
     to_skip = set()
 
     for list_data in data:
         for entry in list_data["entries"]:
+            
             sid = entry["media"]["id"]
             if entry["score"] == 0:
                 user_series_rating_weighted[sid] = 0.5
             else:
+                for genre in entry["media"]["genres"]:
+                    if genre not in genres_ratings:
+                        genres_ratings[genre] = [0, 0] # (rating sum, rating count)
+                    else:
+                        genres_ratings[genre][0] += entry["score"]/100
+                        genres_ratings[genre][1] += 1
                 user_series_rating_weighted[sid] = entry["score"]/100
             if entry["status"] == "CURRENT":
                 user_series_rating_weighted[sid] *= 0.75
@@ -98,7 +108,7 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
                 to_skip.add(sid)
 
     for k in user_series_rating_weighted.keys():
-        user_series_rating_weighted[k] -= 0.5
+        user_series_rating_weighted[k] -= 0.25
     series_ids = list(user_series_rating_weighted.keys())
 
     i = 0
@@ -136,7 +146,10 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
                 if media_id not in recommendations:
                     recommendations[media_id] = 0
                 if rating_sum:
-                    recommendations[media_id] += (recom["rating"] / rating_sum) * user_series_rating_weighted[recoms["id"]]
+                    recommendations[media_id] += ((recom["rating"] / rating_sum) *
+                                                   user_series_rating_weighted[recoms["id"]] * 
+                                                   sum([genres_ratings[genre][0]/genres_ratings[genre][1] for genre in recom["mediaRecommendation"]["genres"] if genre in genres_ratings and genres_ratings[genre][1] != 0])
+                                                )
         
         i += 50
 
