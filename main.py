@@ -1,78 +1,23 @@
-import requests
+import httpx
 from typing import Literal, Any
+from constants import *
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
-query_list = """
-query ($username: String, $type: MediaType) {
-    MediaListCollection(userName: $username, type: $type) {
-        lists {
-            entries {
-                status
-                score(format: POINT_100)
-                progress
-                repeat
-                media {
-                    id
-                    title { 
-                        romaji
-                    }
-                    genres
-                }
-            }
-        }
-    }
-}
-""".replace("    ", "") # reducing payload size
+app = FastAPI()
 
-query_recom = """
-query ($ids: [Int]) {
-    Page(page: 1, perPage: 50) {
-        media(id_in: $ids) {
-            id
-            recommendations(page: 1, perPage: 25, sort: RATING_DESC) {
-                nodes{
-                    rating
-                    mediaRecommendation{
-                        id
-                        genres
-                    }
-                }
-            }
-        }
-    }
-}
-""".replace("    ", "")
-
-query_final = """
-query ($ids: [Int]) {
-    Page(page: 1, perPage: 10) {
-        media(id_in: $ids) {
-            id,
-            title {
-                romaji
-            },
-            coverImage {
-                extraLarge
-            }
-        }
-    }
-}
-""".replace("    ", "")
-
-def get_user_media_list(user: str, media_type: Literal["ANIME", "MANGA"]) -> list[dict[str, Any]] | None:
-    req_data = requests.post("https://graphql.anilist.co/", json={"query": query_list, "variables": {"username": user, "type": media_type}})
+@app.get("/recommendations")
+async def get_recommendations(user: str, include_planned: bool, media_type: Literal["ANIME", "MANGA"]) -> list[str] | None:
+    
+    client = httpx.AsyncClient()
+    
+    req_data = await client.post("https://graphql.anilist.co/", json={"query": QUERY_LIST, "variables": {"username": user, "type": media_type}})
 
     if not req_data:
-        return None
-
-    return req_data.json()["data"]["MediaListCollection"]["lists"]
-
-
-def get_recommendations(user: str, include_planned: bool, media_type: Literal["ANIME", "MANGA"]) -> list[str] | None:
-    
-    data = get_user_media_list(user, media_type)
-    if data is None:
         print("Cannot fetch provided users profile")
-        return
+        return JSONResponse([], status_code=422)
+
+    data = req_data.json()["data"]["MediaListCollection"]["lists"]
 
     user_series_rating_weighted = {}
     genres_ratings = {}
@@ -117,21 +62,22 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
         id_pack = series_ids[i:i+50]
 
         try:
-            req_recom = requests.post("https://graphql.anilist.co/", json={"query": query_recom, "variables": {"ids": id_pack}})
+            req_recom = await client.post("https://graphql.anilist.co/", json={"query": QUERY_RECOM, "variables": {"ids": id_pack}})
         except:
             req_recom = None
             tries_left = 5
             while tries_left:
                 print(f"Cannot fetch page of media data. {tries_left} tries left.")
                 try:
-                    req_recom = requests.post("https://graphql.anilist.co/", json={"query": query_recom, "variables": {"ids": id_pack}})
+                    req_recom = await client.post("https://graphql.anilist.co/", json={"query": QUERY_RECOM, "variables": {"ids": id_pack}})
                 except:
                     pass
                 if req_recom:
                     break
                 tries_left -= 1
-            print("Cannot fetch page of media data. Limit reached.")
-            return
+            if not req_recom:
+                print("Cannot fetch page of media data. Limit reached.")
+                return JSONResponse([], status_code=422)
         
 
         media = req_recom.json()["data"]["Page"]["media"]
@@ -147,8 +93,9 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
                     recommendations[media_id] = 0
                 if rating_sum:
                     recommendations[media_id] += ((recom["rating"] / rating_sum) *
-                                                   user_series_rating_weighted[recoms["id"]] * 
-                                                   sum([genres_ratings[genre][0]/genres_ratings[genre][1] for genre in recom["mediaRecommendation"]["genres"] if genre in genres_ratings and genres_ratings[genre][1] != 0])
+                                                   user_series_rating_weighted[recoms["id"]] * 0.4 +
+                                                   (recom["rating"] / rating_sum) * 0.6 *
+                                                   sum([genres_ratings[genre][0]/genres_ratings[genre][1] for genre in recom["mediaRecommendation"]["genres"] if genre in genres_ratings and genres_ratings[genre][1] != 0]) 
                                                 )
         
         i += 50
@@ -160,28 +107,28 @@ def get_recommendations(user: str, include_planned: bool, media_type: Literal["A
     recommended.sort(key=lambda x: recommendations[x], reverse=True)
 
     try:
-        req_final = requests.post("https://graphql.anilist.co/", json={"query": query_final, "variables": {"ids": recommended[:10]}})
+        req_final = await client.post("https://graphql.anilist.co/", json={"query": QUERY_FINAL, "variables": {"ids": recommended[:10]}})
     except:
         req_final = None
         tries_left = 5
         while tries_left:
             print(f"Cannot fetch recommended series data. {tries_left} tries left.")
             try:
-                req_final = requests.post("https://graphql.anilist.co/", json={"query": query_recom, "variables": {"ids": id_pack}})
+                req_final = await client.post("https://graphql.anilist.co/", json={"query": QUERY_RECOM, "variables": {"ids": id_pack}})
             except:
                 pass
             if req_final:
                 break
             tries_left -= 1
         print("Cannot fetch page of media data. Limit reached.")
-        return
+        return JSONResponse([], status_code=422)
         
     final_data = req_final.json()["data"]["Page"]["media"]
     final_recoms = {}
     for recom in final_data:
-        final_recoms[recom["id"]] = recom["title"]["romaji"]
+        final_recoms[recom["id"]] = [recom["id"], recom["title"]["romaji"], recom["coverImage"]["large"]]
 
-    return [final_recoms[ser_id] for ser_id in recommended[:10]]
+    return JSONResponse([final_recoms[ser_id] for ser_id in recommended[:10]])
         
 def main():
     while True:
@@ -200,4 +147,5 @@ def main():
                 print()
             
 if __name__ == "__main__":
-    main()
+    # main()
+    pass
